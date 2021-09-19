@@ -118,6 +118,11 @@ pub fn main() {
         if let Err(err) = cmd_hash_object(write, path, object_type) {
             println!("{}", err);
         }
+    } else if let Some(matches) = matches.subcommand_matches("log") {
+        let commit = matches.value_of("commit").unwrap();
+        if let Err(err) = cmd_log(commit) {
+            println!("{}", err);
+        }
     } else {
         todo!();
     }
