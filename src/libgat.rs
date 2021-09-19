@@ -173,9 +173,7 @@ impl GitRepository {
                 .parse::<i32>()
                 .unwrap();
             if vers != 0 {
-                let mut err = String::new();
-                write!(&mut err, "Unsupported repositoryformatversion {}", vers);
-                return Err(err);
+                return Err(format!("Unsupported repositoryformatversion {}", vers));
             }
         }
         return Ok(GitRepository {
@@ -239,14 +237,10 @@ fn repo_create(path: &str) -> Result<GitRepository, String> {
     let worktree = Path::new(&repo.worktree);
     if worktree.exists() {
         if !worktree.is_dir() {
-            let mut err = String::new();
-            write!(&mut err, "{} is not a directory!", path);
-            return Err(err);
+            return Err(format!("{} is not a directory!", path));
         }
         for _ in worktree.read_dir().expect("read_dir call failed") {
-            let mut err = String::new();
-            write!(&mut err, "{} is not empty!", path);
-            return Err(err);
+            return Err(format!("{} is not empty!", path));
         }
     } else {
         if let Err(err) = fs::create_dir_all(worktree) {
@@ -405,9 +399,7 @@ fn object_read<'a: 'b, 'b>(repo: &'a GitRepository, sha: &str) -> Result<GitObje
     // x + 1 to skip the space
     let size = usize::from_str_radix(str::from_utf8(&raw[x + 1..y]).unwrap(), 10).unwrap();
     if size != raw.len() - y - 1 {
-        let mut err = String::new();
-        write!(&mut err, "Malformed object {}: bad length", sha);
-        return Err(err);
+        return Err(format!("Malformed object {}: bad length", sha));
     }
 
     let fmt = str::from_utf8(fmt).unwrap();
