@@ -3,6 +3,7 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use ini::Ini;
+use num_bigint::BigUint;
 use sha1;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashSet};
@@ -86,7 +87,17 @@ pub fn main() {
                         .help("Commit to start at."),
                 ),
         )
-        .subcommand(SubCommand::with_name("ls-tree"))
+        .subcommand(
+            SubCommand::with_name("ls-tree")
+                .about("Pretty-print a tree object.")
+                .arg(
+                    Arg::with_name("object")
+                        .help("The object to show.")
+                        .value_name("object")
+                        .required(true)
+                        .takes_value(true),
+                ),
+        )
         .subcommand(SubCommand::with_name("merge"))
         .subcommand(SubCommand::with_name("rebase"))
         .subcommand(SubCommand::with_name("rev-parse"))
@@ -121,6 +132,11 @@ pub fn main() {
     } else if let Some(matches) = matches.subcommand_matches("log") {
         let commit = matches.value_of("commit").unwrap();
         if let Err(err) = cmd_log(commit) {
+            println!("{}", err);
+        }
+    } else if let Some(matches) = matches.subcommand_matches("ls-tree") {
+        let object = matches.value_of("object").unwrap();
+        if let Err(err) = cmd_ls_tree(object) {
             println!("{}", err);
         }
     } else {
@@ -333,10 +349,11 @@ struct GitObject<'a> {
     object_type: GitObjectType,
     blobdata: Vec<u8>,
     kvlm: BTreeMap<Vec<u8>, DctValue>,
+    items: Vec<GitTreeLeaf>,
 }
 
-impl<'b> GitObject<'b> {
-    fn new<'a: 'b>(
+impl<'a> GitObject<'a> {
+    fn new(
         repo: Option<&'a GitRepository>,
         data: Option<Vec<u8>>,
         object_type: GitObjectType,
@@ -344,8 +361,9 @@ impl<'b> GitObject<'b> {
         let mut object = Self {
             repo: repo,
             object_type: object_type,
-            blobdata: vec![],
+            blobdata: Vec::new(),
             kvlm: BTreeMap::new(),
+            items: Vec::new(),
         };
         match data {
             None => (),
@@ -358,15 +376,19 @@ impl<'b> GitObject<'b> {
         return match self.object_type {
             GitObjectType::Blob => self.blobdata.clone(),
             GitObjectType::Commit => kvlm_serialize(&self.kvlm),
+            GitObjectType::Tree => tree_serialize(self),
             _ => todo!(),
         };
     }
 
-    fn deserialize<'a: 'b>(&mut self, data: Vec<u8>) {
+    fn deserialize(&mut self, data: Vec<u8>) {
         match self.object_type {
             GitObjectType::Blob => self.blobdata = data,
             GitObjectType::Commit => {
                 self.kvlm = kvlm_parse(&data, None, None);
+            }
+            GitObjectType::Tree => {
+                self.items = tree_parse(data);
             }
             _ => todo!(),
         };
@@ -664,5 +686,90 @@ fn log_graphviz(repo: &GitRepository, sha: &str, seen: &mut HashSet<String>) -> 
         log_graphviz(repo, &p, seen)?;
     }
 
+    return Ok(());
+}
+
+#[derive(Clone, Debug)]
+struct GitTreeLeaf {
+    mode: Vec<u8>,
+    path: Vec<u8>,
+    hex: String,
+}
+
+impl GitTreeLeaf {
+    fn new(mode: Vec<u8>, path: Vec<u8>, hex: String) -> Self {
+        return Self {
+            mode: mode,
+            path: path,
+            hex: hex,
+        };
+    }
+}
+
+fn tree_parse_one(raw: &[u8], start: Option<usize>) -> (usize, GitTreeLeaf) {
+    let start = start.unwrap_or(0);
+    let x = find(b' ', raw, start).try_into().unwrap();
+    assert!(x - start == 5 || x - start == 6);
+
+    let mode = &raw[start..x];
+
+    let y = find(b'\0', raw, x).try_into().unwrap();
+    let path = &raw[x + 1..y];
+
+    let sha = format!("{:040x}", BigUint::from_bytes_be(&raw[y + 1..y + 21]));
+    return (y + 21, GitTreeLeaf::new(mode.to_vec(), path.to_vec(), sha));
+}
+
+fn tree_parse(raw: Vec<u8>) -> Vec<GitTreeLeaf> {
+    let raw = raw.clone();
+    let mut pos = 0;
+    let max = raw.len();
+    let mut ret = Vec::new();
+    while pos < max {
+        match tree_parse_one(&raw, Some(pos)) {
+            (p, data) => {
+                pos = p;
+                ret.push(data);
+            }
+        };
+    }
+
+    return ret.clone();
+}
+
+fn tree_serialize(obj: &GitObject) -> Vec<u8> {
+    let mut ret = Vec::new();
+    for i in &obj.items {
+        ret.extend(&i.mode);
+        ret.extend(b" ");
+        ret.extend(&i.path);
+        ret.extend(b"\0");
+        let sha = BigUint::parse_bytes(&i.hex.as_bytes(), 16).unwrap();
+        ret.extend(guarantee_length_be(&sha.to_bytes_be(), 20));
+    }
+
+    return ret;
+}
+
+fn guarantee_length_be(original: &[u8], wanted_length: usize) -> Vec<u8> {
+    let given_length = original.len();
+    let mut new = Vec::with_capacity(wanted_length);
+    new.resize(wanted_length - given_length, 0);
+    new.extend(original);
+    return new;
+}
+
+fn cmd_ls_tree(object: &str) -> Result<(), String> {
+    let repo = repo_find(String::from("."), true)?.unwrap();
+    let obj = object_read(&repo, &object_find(&repo, object, Some(b"tree"), true))?;
+    for item in obj.items {
+        println!(
+            "{0} {1} {2}\t{3}",
+            "0".repeat(6 - item.mode.len()) + &String::from_utf8(item.mode).unwrap(),
+            String::from_utf8(object_read(&repo, &item.hex)?.fmt().to_vec()).unwrap(),
+            item.hex,
+            String::from_utf8(item.path).unwrap()
+        );
+    }
     return Ok(());
 }
