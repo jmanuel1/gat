@@ -8,6 +8,7 @@ use sha1;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashSet};
 use std::convert::{TryFrom, TryInto};
+use std::fmt::Debug;
 use std::fmt::Write;
 use std::fs;
 use std::io;
@@ -147,7 +148,17 @@ pub fn main() {
 struct GitRepository {
     worktree: String,
     gitdir: String,
-    conf: Option<Ini>,
+    _conf: Option<Ini>,
+}
+
+impl Debug for GitRepository {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitRepository")
+            .field("worktree", &self.worktree)
+            .field("gitdir", &self.gitdir)
+            .field("_conf", &"<conf>")
+            .finish()
+    }
 }
 
 impl GitRepository {
@@ -167,7 +178,7 @@ impl GitRepository {
             &GitRepository {
                 worktree: String::from(path),
                 gitdir: gitdir.to_string(),
-                conf: None,
+                _conf: None,
             },
             &String::from("config"),
             false,
@@ -195,7 +206,7 @@ impl GitRepository {
         return Ok(GitRepository {
             worktree: String::from(path),
             gitdir: gitdir.to_string(),
-            conf: Some(conf.unwrap_or(Ini::new())),
+            _conf: Some(conf.unwrap_or(Ini::new())),
         });
     }
 }
@@ -337,6 +348,7 @@ fn repo_find(
 
 /* ---- */
 
+#[derive(Debug, PartialEq)]
 enum GitObjectType {
     Commit,
     Tree,
@@ -344,6 +356,7 @@ enum GitObjectType {
     Blob,
 }
 
+#[derive(Debug)]
 struct GitObject<'a> {
     repo: Option<&'a GitRepository>,
     object_type: GitObjectType,
@@ -530,7 +543,7 @@ fn object_hash(
     return Ok(object_write(&obj, repo.is_some()));
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum DctValue {
     List(Vec<Vec<u8>>),
     Single(Vec<u8>),
