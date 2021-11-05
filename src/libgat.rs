@@ -40,7 +40,24 @@ pub fn main() {
                         .takes_value(true),
                 ),
         )
-        .subcommand(SubCommand::with_name("checkout"))
+        .subcommand(
+            SubCommand::with_name("checkout")
+                .about("Checkout a commit inside of a directory.")
+                .arg(
+                    Arg::with_name("commit")
+                        .takes_value(true)
+                        .value_name("commit")
+                        .help("The commit or tree to checkout.")
+                        .required(true),
+                )
+                .arg(
+                    Arg::with_name("path")
+                        .takes_value(true)
+                        .value_name("path")
+                        .help("The EMPTY directory to checkout on.")
+                        .required(true),
+                ),
+        )
         .subcommand(SubCommand::with_name("commit"))
         .subcommand(
             SubCommand::with_name("hash-object")
@@ -138,6 +155,12 @@ pub fn main() {
     } else if let Some(matches) = matches.subcommand_matches("ls-tree") {
         let object = matches.value_of("object").unwrap();
         if let Err(err) = cmd_ls_tree(object) {
+            println!("{}", err);
+        }
+    } else if let Some(matches) = matches.subcommand_matches("checkout") {
+        let commit = matches.value_of("commit").unwrap();
+        let path = matches.value_of("path").unwrap();
+        if let Err(err) = cmd_checkout(commit, path) {
             println!("{}", err);
         }
     } else {
@@ -783,6 +806,65 @@ fn cmd_ls_tree(object: &str) -> Result<(), String> {
             item.hex,
             String::from_utf8(item.path).unwrap()
         );
+    }
+    return Ok(());
+}
+
+fn cmd_checkout(commit: &str, path: &str) -> Result<(), String> {
+    let repo = repo_find(String::from("."), true)?.unwrap();
+    let mut obj = object_read(&repo, &object_find(&repo, commit, None, true))?;
+    if obj.object_type == GitObjectType::Commit {
+        match &obj.kvlm[b"tree" as &[u8]] {
+            DctValue::Single(tree) => {
+                obj = object_read(&repo, &String::from_utf8(tree.to_owned()).unwrap())?;
+            }
+            _ => unreachable!(),
+        }
+    }
+    let path = Path::new(path);
+    if path.exists() {
+        if !path.is_dir() {
+            return Err(format!("Not a directory {}!", path.display()));
+        }
+        if path
+            .read_dir()
+            .map(|entries| entries.count())
+            .expect(&format!("failed to read directory {}", path.display()))
+            != 0
+        {
+            return Err(format!("Not empty {}!", path.display()));
+        }
+    } else {
+        if let Err(err) = fs::create_dir_all(path) {
+            return Err(err.to_string());
+        }
+    }
+
+    let path = match path.canonicalize() {
+        Ok(p) => p,
+        Err(err) => return Err(err.to_string()),
+    };
+    return tree_checkout(&repo, &obj, &path);
+}
+
+fn tree_checkout(repo: &GitRepository, tree: &GitObject, path: &Path) -> Result<(), String> {
+    for item in &tree.items {
+        let obj = object_read(repo, &item.hex)?;
+        let dest = path.join(Path::new(&String::from_utf8(item.path.clone()).unwrap()));
+        match obj.object_type {
+            GitObjectType::Tree => {
+                if let Err(err) = fs::create_dir(&dest) {
+                    return Err(err.to_string());
+                }
+                return tree_checkout(repo, &obj, &dest);
+            }
+            GitObjectType::Blob => {
+                if let Err(err) = fs::write(dest, obj.blobdata) {
+                    return Err(err.to_string());
+                }
+            }
+            _ => (),
+        }
     }
     return Ok(());
 }
