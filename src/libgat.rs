@@ -187,8 +187,9 @@ impl Debug for GitRepository {
 impl GitRepository {
     fn new(
         path: &str,
-        force: bool, /* default is False in WYAG */
+        force: Option<bool>, /* default is False in WYAG */
     ) -> Result<GitRepository, String> {
+        let force = force.unwrap_or(false);
         let gitdir = Path::new(&path).join(".git");
         if !(force || gitdir.is_dir()) {
             return Err("Not a Git repository ".to_owned() + &path);
@@ -204,7 +205,7 @@ impl GitRepository {
                 _conf: None,
             },
             &String::from("config"),
-            false,
+            Some(false),
         );
         let mut conf = None;
         if let Ok(cf) = cf {
@@ -245,8 +246,9 @@ fn repo_path(repo: &GitRepository, path: &str) -> String {
 fn repo_file(
     repo: &GitRepository,
     path: &str,
-    mkdir: bool, /* false by default in WYAG */
+    mkdir: Option<bool>, /* false by default in WYAG */
 ) -> Result<String, String> {
+    let mkdir = mkdir.unwrap_or(false);
     return match Path::new(&path).parent() {
         None => Ok(repo_path(repo, path)),
         Some(dir) => {
@@ -282,7 +284,7 @@ fn repo_dir(repo: &GitRepository, path: &str, mkdir: bool) -> Result<String, Str
 }
 
 fn repo_create(path: &str) -> Result<GitRepository, String> {
-    let repo = GitRepository::new(path, true)?;
+    let repo = GitRepository::new(path, Some(true))?;
 
     let worktree = Path::new(&repo.worktree);
     if worktree.exists() {
@@ -304,20 +306,20 @@ fn repo_create(path: &str) -> Result<GitRepository, String> {
     repo_dir(&repo, &String::from("refs/heads"), true)?;
 
     if let Err(err) = fs::write(
-        repo_file(&repo, &String::from("description"), false)?,
+        repo_file(&repo, &String::from("description"), Some(false))?,
         "Unnamed repository; edit this file 'description' to name the repository.\n",
     ) {
         return Err(err.to_string());
     }
 
     if let Err(err) = fs::write(
-        repo_file(&repo, &String::from("HEAD"), false)?,
+        repo_file(&repo, &String::from("HEAD"), Some(false))?,
         "ref: refs/heads/master\n",
     ) {
         return Err(err.to_string());
     }
 
-    repo_default_config().write_to_file(repo_file(&repo, &String::from("config"), false)?);
+    repo_default_config().write_to_file(repo_file(&repo, &String::from("config"), Some(false))?);
 
     return Ok(repo);
 }
@@ -345,16 +347,18 @@ fn repo_default_config() -> Ini {
 }
 
 fn repo_find(
-    path: String,   /* "." by default in WYAG */
-    required: bool, /* True by default in WYAG */
+    path: Option<String>,   /* "." by default in WYAG */
+    required: Option<bool>, /* True by default in WYAG */
 ) -> Result<Option<GitRepository>, String> {
+    let path = path.unwrap_or(String::from("."));
+    let required = required.unwrap_or(true);
     let path = match fs::canonicalize(Path::new(&path)) {
         Ok(path) => path,
         Err(err) => return Err(err.to_string()),
     };
 
     if path.join(".git").is_dir() {
-        return Ok(Some(GitRepository::new(path.to_str().unwrap(), false)?));
+        return Ok(Some(GitRepository::new(path.to_str().unwrap(), Some(false))?));
     }
 
     match path.parent() {
@@ -365,7 +369,7 @@ fn repo_find(
                 return Ok(None);
             }
         }
-        Some(parent) => repo_find(String::from(parent.to_str().unwrap()), required),
+        Some(parent) => repo_find(Some(String::from(parent.to_str().unwrap())), Some(required)),
     }
 }
 
@@ -442,7 +446,7 @@ impl<'a> GitObject<'a> {
 
 fn object_read<'a: 'b, 'b>(repo: &'a GitRepository, sha: &str) -> Result<GitObject<'b>, String> {
     let sha_path = Path::new("objects").join(&sha[0..2]).join(&sha[2..]);
-    let path = repo_file(repo, sha_path.to_str().unwrap(), false)?;
+    let path = repo_file(repo, sha_path.to_str().unwrap(), Some(false))?;
     let path = Path::new(&path);
     let mut f = fs::File::open(&path).unwrap();
     let mut decoder = ZlibDecoder::new(&mut f);
@@ -483,15 +487,16 @@ fn object_find(
     _repo: &GitRepository,
     name: &str,
     _fmt: Option<&[u8]>, /* None by default in WYAG */
-    _follow: bool,       /* True by default in WYAG */
+    _follow: Option<bool>,       /* True by default in WYAG */
 ) -> String {
     return String::from(name);
 }
 
 fn object_write(
     obj: &GitObject,
-    actually_write: bool, /* True by default in WYAG */
+    actually_write: Option<bool>, /* True by default in WYAG */
 ) -> String {
+    let actually_write = actually_write.unwrap_or(true);
     let data = obj.serialize();
     let mut result = Vec::new();
     result.extend(obj.fmt());
@@ -504,7 +509,7 @@ fn object_write(
     let sha = m.digest().to_string();
     if actually_write {
         let path = Path::new("objects").join(&sha[0..2]).join(&sha[2..]);
-        let path = repo_file(&obj.repo.unwrap(), path.to_str().unwrap(), actually_write).unwrap();
+        let path = repo_file(&obj.repo.unwrap(), path.to_str().unwrap(), Some(actually_write)).unwrap();
         let mut f = fs::File::create(path).unwrap();
         let mut encoder = ZlibEncoder::new(f, Compression::default());
         encoder.write(&result);
@@ -513,7 +518,7 @@ fn object_write(
 }
 
 fn cmd_cat_file(object: &str, object_type: &str) -> Result<(), String> {
-    let repo = repo_find(String::from("."), true)?.unwrap();
+    let repo = repo_find(Some(String::from(".")), Some(true))?.unwrap();
     return cat_file(
         &repo,
         object,
@@ -522,14 +527,14 @@ fn cmd_cat_file(object: &str, object_type: &str) -> Result<(), String> {
 }
 
 fn cat_file(repo: &GitRepository, obj: &str, fmt: Option<&[u8]>) -> Result<(), String> {
-    let obj = object_read(repo, &object_find(repo, obj, fmt, true))?;
+    let obj = object_read(repo, &object_find(repo, obj, fmt, Some(true)))?;
     io::stdout().write(&obj.serialize());
     return Ok(());
 }
 
 fn cmd_hash_object(write: bool, path: &str, object_type: &str) -> Result<(), String> {
     let repo = if write {
-        Some(GitRepository::new(".", false)?)
+        Some(GitRepository::new(".", Some(false))?)
     } else {
         None
     };
@@ -563,7 +568,7 @@ fn object_hash(
 
     let obj = GitObject::new(repo.as_ref(), Some(data), object_type);
 
-    return Ok(object_write(&obj, repo.is_some()));
+    return Ok(object_write(&obj, Some(repo.is_some())));
 }
 
 #[derive(Clone, Debug)]
@@ -689,11 +694,11 @@ where
 }
 
 fn cmd_log(commit: &str) -> Result<(), String> {
-    let repo = repo_find(String::from("."), true)?.unwrap();
+    let repo = repo_find(Some(String::from(".")), Some(true))?.unwrap();
     println!("digraph wyaglog{{");
     log_graphviz(
         &repo,
-        &object_find(&repo, commit, None, true),
+        &object_find(&repo, commit, None, Some(true)),
         &mut HashSet::new(),
     )?;
     println!("}}");
@@ -796,8 +801,8 @@ fn guarantee_length_be(original: &[u8], wanted_length: usize) -> Vec<u8> {
 }
 
 fn cmd_ls_tree(object: &str) -> Result<(), String> {
-    let repo = repo_find(String::from("."), true)?.unwrap();
-    let obj = object_read(&repo, &object_find(&repo, object, Some(b"tree"), true))?;
+    let repo = repo_find(Some(String::from(".")), Some(true))?.unwrap();
+    let obj = object_read(&repo, &object_find(&repo, object, Some(b"tree"), Some(true)))?;
     for item in obj.items {
         println!(
             "{0} {1} {2}\t{3}",
@@ -811,8 +816,8 @@ fn cmd_ls_tree(object: &str) -> Result<(), String> {
 }
 
 fn cmd_checkout(commit: &str, path: &str) -> Result<(), String> {
-    let repo = repo_find(String::from("."), true)?.unwrap();
-    let mut obj = object_read(&repo, &object_find(&repo, commit, None, true))?;
+    let repo = repo_find(Some(String::from(".")), Some(true))?.unwrap();
+    let mut obj = object_read(&repo, &object_find(&repo, commit, None, Some(true)))?;
     if obj.object_type == GitObjectType::Commit {
         match &obj.kvlm[b"tree" as &[u8]] {
             DctValue::Single(tree) => {
