@@ -9,11 +9,10 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::fmt::Debug;
-use std::fmt::Write;
 use std::fs;
 use std::io;
 use std::io::{Read, Write as IOWrite};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str;
 
 pub fn main() {
@@ -133,7 +132,7 @@ pub fn main() {
                 .arg(Arg::with_name("name").help("The name to parse")),
         )
         .subcommand(SubCommand::with_name("rm"))
-        .subcommand(SubCommand::with_name("show-ref"))
+        .subcommand(SubCommand::with_name("show-ref").about("List references."))
         .subcommand(SubCommand::with_name("tag"))
         .get_matches();
 
@@ -180,6 +179,10 @@ pub fn main() {
         let name = matches.value_of("name").unwrap();
         let object_type = matches.value_of("type");
         if let Err(err) = cmd_rev_parse(name, object_type) {
+            println!("{}", err);
+        }
+    } else if let Some(_) = matches.subcommand_matches("show-ref") {
+        if let Err(err) = cmd_show_ref() {
             println!("{}", err);
         }
     } else {
@@ -979,6 +982,43 @@ fn ref_resolve(repo: &GitRepository, reference: &str) -> Result<String, String> 
     String::from_utf8(data.to_owned()).map_err(|err| err.to_string())
 }
 
+enum ReferenceTree {
+    Reference(PathBuf),
+    Tree(BTreeMap<PathBuf, ReferenceTree>),
+}
+
+fn ref_list(
+    repo: &GitRepository,
+    path: Option<&Path>,
+) -> Result<BTreeMap<PathBuf, ReferenceTree>, String> {
+    let path = match path {
+        None => {
+            let path = repo_dir(repo, "refs", None)?;
+            Path::new(&path).to_path_buf()
+        }
+        Some(path) => path.to_path_buf(),
+    };
+
+    let mut ret = BTreeMap::new();
+    for entry in path.read_dir().map_err(|err| err.to_string())? {
+        let mut f = PathBuf::new();
+        f.push(entry.map_err(|err| err.to_string())?.file_name());
+        let can = path.join(&f);
+        if can.is_dir() {
+            ret.insert(f, ReferenceTree::Tree(ref_list(repo, Some(&can))?));
+        } else {
+            ret.insert(
+                f,
+                ReferenceTree::Reference(
+                    Path::new(&ref_resolve(repo, can.to_str().unwrap())?).to_path_buf(),
+                ),
+            );
+        }
+    }
+
+    Ok(ret)
+}
+
 fn object_resolve(repo: &GitRepository, name: &str) -> Result<Vec<String>, String> {
     use regex::Regex;
     let mut candidates: Vec<String> = Vec::new();
@@ -1013,4 +1053,54 @@ fn object_resolve(repo: &GitRepository, name: &str) -> Result<Vec<String>, Strin
         }
     }
     Ok(candidates)
+}
+
+fn cmd_show_ref() -> Result<(), String> {
+    let repo = repo_find(None, None)?.expect("to find a repository");
+    let refs = ref_list(&repo, None)?;
+    show_ref(&repo, &refs, None, Some(Path::new("refs")));
+    Ok(())
+}
+
+fn show_ref(
+    repo: &GitRepository,
+    refs: &BTreeMap<PathBuf, ReferenceTree>,
+    with_hash: Option<bool>,
+    prefix: Option<&Path>,
+) {
+    let with_hash = with_hash.unwrap_or(true);
+    for (k, v) in refs {
+        match v {
+            ReferenceTree::Reference(v) => {
+                println!(
+                    "{}{}{}",
+                    if with_hash {
+                        v.to_str().unwrap().to_owned() + " "
+                    } else {
+                        String::from("")
+                    },
+                    match prefix {
+                        Some(prefix) => path_to_string_with_forward_slashes(prefix) + "/",
+                        None => String::from(""),
+                    },
+                    k.display()
+                )
+            }
+            ReferenceTree::Tree(v) => {
+                let prefix = match prefix {
+                    Some(prefix) => prefix.join(k),
+                    None => k.to_path_buf(),
+                };
+                show_ref(repo, v, Some(with_hash), Some(&prefix))
+            }
+        }
+    }
+}
+
+fn path_to_string_with_forward_slashes(path: &Path) -> String {
+    let str_components: Vec<&str> = path
+        .into_iter()
+        .map(|component| component.to_str().expect("valid unicode path"))
+        .collect();
+    str_components.join("/")
 }
