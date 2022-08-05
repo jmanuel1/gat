@@ -118,7 +118,20 @@ pub fn main() {
         )
         .subcommand(SubCommand::with_name("merge"))
         .subcommand(SubCommand::with_name("rebase"))
-        .subcommand(SubCommand::with_name("rev-parse"))
+        .subcommand(
+            SubCommand::with_name("rev-parse")
+                .about("Parse revision (or other objects) identifiers")
+                .arg(
+                    Arg::with_name("wyag-type")
+                        .value_name("type")
+                        .possible_values(&["blob", "commit", "tag", "tree"])
+                        .required(false)
+                        .help("Specify the expected type")
+                        .takes_value(true)
+                        .long("wyag-type"),
+                )
+                .arg(Arg::with_name("name").help("The name to parse")),
+        )
         .subcommand(SubCommand::with_name("rm"))
         .subcommand(SubCommand::with_name("show-ref"))
         .subcommand(SubCommand::with_name("tag"))
@@ -161,6 +174,12 @@ pub fn main() {
         let commit = matches.value_of("commit").unwrap();
         let path = matches.value_of("path").unwrap();
         if let Err(err) = cmd_checkout(commit, path) {
+            println!("{}", err);
+        }
+    } else if let Some(matches) = matches.subcommand_matches("rev-parse") {
+        let name = matches.value_of("name").unwrap();
+        let object_type = matches.value_of("type");
+        if let Err(err) = cmd_rev_parse(name, object_type) {
             println!("{}", err);
         }
     } else {
@@ -384,6 +403,20 @@ enum GitObjectType {
     Blob,
 }
 
+impl TryFrom<&[u8]> for GitObjectType {
+    type Error = String;
+
+    fn try_from(fmt: &[u8]) -> Result<Self, Self::Error> {
+        match fmt {
+            b"commit" => Ok(GitObjectType::Commit),
+            b"tree" => Ok(GitObjectType::Tree),
+            b"tag" => Ok(GitObjectType::Tag),
+            b"blob" => Ok(GitObjectType::Blob),
+            _ => Err(format!("Unknown type {:?}!", fmt)),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct GitObject<'a> {
     repo: Option<&'a GitRepository>,
@@ -476,21 +509,76 @@ fn object_read<'a: 'b, 'b>(repo: &'a GitRepository, sha: &str) -> Result<GitObje
     } else if fmt == "blob" {
         GitObjectType::Blob
     } else {
-        let mut err = String::new();
-        write!(&mut err, "Unknown type {} for object {}", fmt, sha);
-        return Err(err);
+        return Err(format!("Unknown type {} for object {}", fmt, sha));
     };
 
     return Ok(GitObject::new(Some(repo), Some(raw[y + 1..].to_owned()), c));
 }
 
 fn object_find(
-    _repo: &GitRepository,
+    repo: &GitRepository,
     name: &str,
-    _fmt: Option<&[u8]>, /* None by default in WYAG */
-    _follow: Option<bool>,       /* True by default in WYAG */
-) -> String {
-    return String::from(name);
+    fmt: Option<&[u8]>,   /* None by default in WYAG */
+    follow: Option<bool>, /* True by default in WYAG */
+) -> Result<String, String> {
+    let follow = follow.unwrap_or(true);
+
+    let mut sha = object_resolve(repo, name)?;
+    if sha.is_empty() {
+        return Err(format!("No such reference {}.", name));
+    }
+    if sha.len() > 1 {
+        return Err(format!(
+            "Ambiguous reference {}: Candidates are:\n - {}.",
+            name,
+            sha.join("\n -")
+        ));
+    }
+
+    let mut sha = sha.pop().unwrap();
+
+    if fmt.is_none() {
+        return Ok(sha);
+    }
+    let fmt = fmt.unwrap();
+
+    loop {
+        let obj = object_read(repo, &sha)?;
+
+        if obj.fmt() == fmt {
+            return Ok(sha);
+        }
+
+        if follow {
+            if obj.fmt() == b"tag" {
+                sha = String::from_utf8(match &obj.kvlm[b"object" as &[u8]] {
+                    DctValue::Single(value) => value.clone(),
+                    _ => {
+                        return Err(String::from(
+                            "object key should refer to a single value in kvlm",
+                        ))
+                    }
+                })
+                .map_err(|err| err.to_string())?;
+            } else if obj.fmt() == b"commit" && fmt == b"tree" {
+                sha = String::from_utf8(match &obj.kvlm[b"tree" as &[u8]] {
+                    DctValue::Single(value) => value.clone(),
+                    _ => {
+                        return Err(String::from(
+                            "tree key should refer to a single value in kvlm",
+                        ))
+                    }
+                })
+                .map_err(|err| err.to_string())?;
+            }
+        } else {
+            return Err(format!(
+                "No such reference {} to object type {}.",
+                name,
+                String::from_utf8(fmt.to_owned()).unwrap()
+            ));
+        }
+    }
 }
 
 fn object_write(
@@ -553,19 +641,9 @@ fn object_hash(
     repo: &Option<GitRepository>,
 ) -> Result<String, String> {
     let mut data = Vec::new();
-    fd.read_to_end(&mut data);
+    fd.read_to_end(&mut data).map_err(|err| err.to_string())?;
 
-    let object_type = match fmt {
-        b"commit" => GitObjectType::Commit,
-        b"tree" => GitObjectType::Tree,
-        b"tag" => GitObjectType::Tag,
-        b"blob" => GitObjectType::Blob,
-        _ => {
-            let mut err = String::new();
-            write!(&mut err, "Unknown type {:?}!", fmt);
-            return Err(err);
-        }
-    };
+    let object_type = fmt.try_into()?;
 
     let obj = GitObject::new(repo.as_ref(), Some(data), object_type);
 
@@ -699,7 +777,7 @@ fn cmd_log(commit: &str) -> Result<(), String> {
     println!("digraph wyaglog{{");
     log_graphviz(
         &repo,
-        &object_find(&repo, commit, None, Some(true)),
+        &object_find(&repo, commit, None, Some(true))?,
         &mut HashSet::new(),
     )?;
     println!("}}");
@@ -803,7 +881,10 @@ fn guarantee_length_be(original: &[u8], wanted_length: usize) -> Vec<u8> {
 
 fn cmd_ls_tree(object: &str) -> Result<(), String> {
     let repo = repo_find(Some(String::from(".")), Some(true))?.unwrap();
-    let obj = object_read(&repo, &object_find(&repo, object, Some(b"tree"), Some(true)))?;
+    let obj = object_read(
+        &repo,
+        &object_find(&repo, object, Some(b"tree"), Some(true))?,
+    )?;
     for item in obj.items {
         println!(
             "{0} {1} {2}\t{3}",
@@ -818,7 +899,7 @@ fn cmd_ls_tree(object: &str) -> Result<(), String> {
 
 fn cmd_checkout(commit: &str, path: &str) -> Result<(), String> {
     let repo = repo_find(Some(String::from(".")), Some(true))?.unwrap();
-    let mut obj = object_read(&repo, &object_find(&repo, commit, None, Some(true)))?;
+    let mut obj = object_read(&repo, &object_find(&repo, commit, None, Some(true))?)?;
     if obj.object_type == GitObjectType::Commit {
         match &obj.kvlm[b"tree" as &[u8]] {
             DctValue::Single(tree) => {
@@ -873,4 +954,63 @@ fn tree_checkout(repo: &GitRepository, tree: &GitObject, path: &Path) -> Result<
         }
     }
     return Ok(());
+}
+
+fn cmd_rev_parse(name: &str, object_type: Option<&str>) -> Result<(), String> {
+    let repo = repo_find(None, None)?.unwrap();
+
+    println!(
+        "{}",
+        object_find(&repo, name, object_type.map(|t| t.as_bytes()), Some(true))?
+    );
+
+    Ok(())
+}
+
+fn ref_resolve(repo: &GitRepository, reference: &str) -> Result<String, String> {
+    let data = fs::read(repo_file(repo, reference, None)?).map_err(|err| err.to_string())?;
+    let data = &data[..data.len() - 1];
+    if data.starts_with(b"ref: ") {
+        return ref_resolve(
+            repo,
+            &String::from_utf8(data[5..].to_owned()).map_err(|err| err.to_string())?,
+        );
+    }
+    String::from_utf8(data.to_owned()).map_err(|err| err.to_string())
+}
+
+fn object_resolve(repo: &GitRepository, name: &str) -> Result<Vec<String>, String> {
+    use regex::Regex;
+    let mut candidates: Vec<String> = Vec::new();
+    let hash_re = Regex::new(r"^[0-9A-Fa-f]{4,40}$").unwrap();
+
+    if name.trim().len() == 0 {
+        return Err(String::from("object name cannot be empty"));
+    }
+
+    if name == "HEAD" {
+        return Ok(vec![ref_resolve(repo, "HEAD")?]);
+    }
+
+    if hash_re.is_match(name) {
+        if name.len() == 40 {
+            return Ok(vec![name.to_ascii_lowercase()]);
+        }
+
+        let name = name.to_ascii_lowercase();
+        let prefix = &name[0..2];
+        let path = repo_dir(repo, &format!("objects/{}", prefix), Some(false))?;
+        let rem = &name[2..];
+        for f in fs::read_dir(path).map_err(|err| err.to_string())? {
+            let f = f
+                .map_err(|err| err.to_string())?
+                .file_name()
+                .into_string()
+                .unwrap();
+            if f.starts_with(rem) {
+                candidates.push(String::from(prefix) + &f);
+            }
+        }
+    }
+    Ok(candidates)
 }
