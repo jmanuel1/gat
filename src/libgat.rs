@@ -252,15 +252,16 @@ fn repo_file(
     return match Path::new(&path).parent() {
         None => Ok(repo_path(repo, path)),
         Some(dir) => {
-            repo_dir(repo, &dir.to_str().unwrap().to_string(), mkdir)?;
+            repo_dir(repo, &dir.to_str().unwrap().to_string(), Some(mkdir))?;
             Ok(repo_path(repo, path))
         }
     };
 }
 
-fn repo_dir(repo: &GitRepository, path: &str, mkdir: bool) -> Result<String, String> {
+fn repo_dir(repo: &GitRepository, path: &str, mkdir: Option<bool>) -> Result<String, String> {
     let full_path = repo_path(repo, path);
     let path = Path::new(&full_path);
+    let mkdir = mkdir.unwrap_or(false);
 
     if path.exists() {
         if path.is_dir() {
@@ -300,10 +301,10 @@ fn repo_create(path: &str) -> Result<GitRepository, String> {
         }
     }
 
-    repo_dir(&repo, &String::from("branches"), true)?;
-    repo_dir(&repo, &String::from("objects"), true)?;
-    repo_dir(&repo, &String::from("refs/tags"), true)?;
-    repo_dir(&repo, &String::from("refs/heads"), true)?;
+    repo_dir(&repo, "branches", Some(true))?;
+    repo_dir(&repo, "objects", Some(true))?;
+    repo_dir(&repo, "refs/tags", Some(true))?;
+    repo_dir(&repo, "refs/heads", Some(true))?;
 
     if let Err(err) = fs::write(
         repo_file(&repo, &String::from("description"), Some(false))?,
