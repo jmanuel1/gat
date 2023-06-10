@@ -329,20 +329,22 @@ fn repo_create(path: &str) -> Result<GitRepository, String> {
     repo_dir(&repo, "refs/heads", Some(true))?;
 
     if let Err(err) = fs::write(
-        repo_file(&repo, &String::from("description"), Some(false))?,
+        repo_file(&repo, "description", Some(false))?,
         "Unnamed repository; edit this file 'description' to name the repository.\n",
     ) {
         return Err(err.to_string());
     }
 
     if let Err(err) = fs::write(
-        repo_file(&repo, &String::from("HEAD"), Some(false))?,
+        repo_file(&repo, "HEAD", Some(false))?,
         "ref: refs/heads/master\n",
     ) {
         return Err(err.to_string());
     }
 
-    repo_default_config().write_to_file(repo_file(&repo, &String::from("config"), Some(false))?);
+    repo_default_config()
+        .write_to_file(repo_file(&repo, "config", Some(false))?)
+        .map_err(|err| err.to_string())?;
 
     return Ok(repo);
 }
@@ -381,7 +383,10 @@ fn repo_find(
     };
 
     if path.join(".git").is_dir() {
-        return Ok(Some(GitRepository::new(path.to_str().unwrap(), Some(false))?));
+        return Ok(Some(GitRepository::new(
+            path.to_str().unwrap(),
+            Some(false),
+        )?));
     }
 
     match path.parent() {
@@ -436,8 +441,8 @@ impl<'a> GitObject<'a> {
         object_type: GitObjectType,
     ) -> Self {
         let mut object = Self {
-            repo: repo,
-            object_type: object_type,
+            repo,
+            object_type,
             blobdata: Vec::new(),
             kvlm: BTreeMap::new(),
             items: Vec::new(),
@@ -481,7 +486,7 @@ impl<'a> GitObject<'a> {
     }
 }
 
-fn object_read<'a: 'b, 'b>(repo: &'a GitRepository, sha: &str) -> Result<GitObject<'b>, String> {
+fn object_read<'a>(repo: &'a GitRepository, sha: &str) -> Result<GitObject<'a>, String> {
     let sha_path = Path::new("objects").join(&sha[0..2]).join(&sha[2..]);
     let path = repo_file(repo, sha_path.to_str().unwrap(), Some(false))?;
     let path = Path::new(&path);
@@ -601,10 +606,15 @@ fn object_write(
     let sha = m.digest().to_string();
     if actually_write {
         let path = Path::new("objects").join(&sha[0..2]).join(&sha[2..]);
-        let path = repo_file(&obj.repo.unwrap(), path.to_str().unwrap(), Some(actually_write)).unwrap();
-        let mut f = fs::File::create(path).unwrap();
+        let path = repo_file(
+            &obj.repo.unwrap(),
+            path.to_str().unwrap(),
+            Some(actually_write),
+        )
+        .unwrap();
+        let f = fs::File::create(path).unwrap();
         let mut encoder = ZlibEncoder::new(f, Compression::default());
-        encoder.write(&result);
+        encoder.write(&result).unwrap();
     }
     return sha;
 }
@@ -619,8 +629,10 @@ fn cmd_cat_file(object: &str, object_type: &str) -> Result<(), String> {
 }
 
 fn cat_file(repo: &GitRepository, obj: &str, fmt: Option<&[u8]>) -> Result<(), String> {
-    let obj = object_read(repo, &object_find(repo, obj, fmt, Some(true)))?;
-    io::stdout().write(&obj.serialize());
+    let obj = object_read(repo, &object_find(repo, obj, fmt, Some(true))?)?;
+    io::stdout()
+        .write(&obj.serialize())
+        .map_err(|err| err.to_string())?;
     return Ok(());
 }
 
@@ -821,11 +833,7 @@ struct GitTreeLeaf {
 
 impl GitTreeLeaf {
     fn new(mode: Vec<u8>, path: Vec<u8>, hex: String) -> Self {
-        return Self {
-            mode: mode,
-            path: path,
-            hex: hex,
-        };
+        return Self { mode, path, hex };
     }
 }
 
